@@ -1934,10 +1934,11 @@ def enrich_receipt(df):
         prod   = _str(row[prod_col])   if prod_col   else ""
         exp    = _str(row[exp_col])    if exp_col    else ""
 
-        # Special rule: Exp=MDC AND Unique=MYR → Tier 3
-        # (MDC product being upgraded to MYR — treated as high-tier upsell)
-        if "MDC" in exp.upper() and "MYR" in upsell.upper():
-            return 2
+        # Special rule: Unique=MYR → Tier 3, UNLESS Exp=MDC (MDC→MYR upgrade = Tier 2)
+        if "MYR" in upsell.upper():
+            if "MDC" in exp.upper():
+                return 2   # MDC → MYR upgrade = Tier 2
+            return 3       # all other MYR upsells = Tier 3
 
         # If upsell col is a boolean flag ("Yes"/"No") from pre-enriched file,
         # it carries no tier info — fall through to product-based lookup.
@@ -6481,16 +6482,17 @@ if enrich_btn:
                     e = _se(row.get("Exp",""))
                     _u_cf = u.strip().casefold()
                     _p_cf = p.strip().casefold()
-                    # Special rule: Exp=MDC AND Unique=MYR → Tier 3 (highest priority)
-                    if "mdc" in e.casefold() and "myr" in _u_cf:
-                        return "MDC-MYR||TS-2||Maxi-A||VE"
+                    # Special rule: Unique=MYR → Tier 3, UNLESS Exp=MDC (MDC→MYR upgrade = Tier 2)
+                    if "myr" in _u_cf:
+                        if "mdc" in e.casefold():
+                            return "MDC-MYR||TS-2||Maxi-A||VE"   # MDC → MYR = Tier 2
+                        return "TS-3||Maxi-2"                      # all other MYR = Tier 3
                     if _u_cf in ("", "yes", "no", "1", "true"):
                         # Generic boolean flag — no tier info, fall through to product or Service_Tier
                         pass
                     elif _u_cf == "combo 1yr": return "MDC-Annual||TS-1"
                     elif _u_cf in _U1: return "MDC-Annual||TS-1"
                     elif _u_cf in _U2: return "MDC-MYR||TS-2||Maxi-A||VE"
-                    elif "myr" in _u_cf:          return "MDC-MYR||TS-2||Maxi-A||VE"
                     elif _u_cf in _U3: return "TS-3||Maxi-2"
                     elif u != "":                  return "TS-3||Maxi-2"
                     if _p_cf in _P1: return "MDC-Annual||TS-1"
