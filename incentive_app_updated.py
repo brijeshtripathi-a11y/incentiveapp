@@ -2469,10 +2469,15 @@ def load_structure_dump(uploaded_file):
                     team    = "HVRI KCD"
                     vintage = _resolve_vintage(subgrp_val, vintage)
                     vbucket = vintage
-                elif grp_up in ("PHARMA","NON PHARMA"):
+                elif grp_up == "PHARMA":
                     team    = "Nagpur Pharma KCD"
                     vintage = _resolve_vintage(subgrp_val, vintage)
                     if vintage not in ("270D+","91-270D"): vintage = "270D+"
+                    vbucket = vintage
+                elif grp_up == "NON PHARMA":
+                    team    = "Regular KCD"
+                    vintage = _resolve_vintage(subgrp_val, vintage)
+                    if vintage not in ("270D+","91-270D"): vintage = "91-270D"
                     vbucket = vintage
                 elif grp_up in ("SAM-ILP","SAM ILP"):
                     team    = "KCD SAM ILP"
