@@ -1937,7 +1937,7 @@ def enrich_receipt(df):
         # Special rule: Exp=MDC AND Unique=MYR → Tier 3
         # (MDC product being upgraded to MYR — treated as high-tier upsell)
         if "MDC" in exp.upper() and "MYR" in upsell.upper():
-            return 3
+            return 2
 
         # If upsell col is a boolean flag ("Yes"/"No") from pre-enriched file,
         # it carries no tier info — fall through to product-based lookup.
@@ -6483,7 +6483,7 @@ if enrich_btn:
                     _p_cf = p.strip().casefold()
                     # Special rule: Exp=MDC AND Unique=MYR → Tier 3 (highest priority)
                     if "mdc" in e.casefold() and "myr" in _u_cf:
-                        return "TS-3||Maxi-2"
+                        return "MDC-MYR||TS-2||Maxi-A||VE"
                     if _u_cf in ("", "yes", "no", "1", "true"):
                         # Generic boolean flag — no tier info, fall through to product or Service_Tier
                         pass
