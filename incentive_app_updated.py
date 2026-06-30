@@ -1,6 +1,31 @@
 """
 IndiaMart Incentive Calculator -- April 2026
 
+Changes for June 2026 ("Joyous June"):
+  - Added build_june_slab_config() / make_june_slab_config_excel() / a 4th
+    sidebar download button -- new PCR-based slab tables for CSD New/SPS/RM
+    and KCD Regular/ROI/HVRI/Nagpur/Listing/Catalog/SAM, all under "_June"
+    sheet-name keys.
+  - parse_slabs() slab-table readers now accept either a "PCR_Threshold" or
+    "PCDV_Threshold" column (see _thresh_col()) -- the sidebar's existing
+    "Base metric" PCR/PCDV toggle decides which actual employee number is
+    compared against these thresholds; the column header is just a label.
+    All "_May" key lookups were extended to check "_June" first, with the
+    same April/March fallback chain as before (so old configs are unaffected).
+  - CSD's Both-Achievers bonus is now its own param (CSD_BothAchievers_Pct,
+    set to 100% for June vs 125% in May) separate from KCD's
+    (KCD_BothAchievers_Pct, stays 125%) -- previously both verticals shared
+    one global "both_achievers_pct" key, which would have wrongly capped KCD
+    at 100% too if CSD's June value had simply been edited in place.
+  - New KCD Nagpur Pharma 0-90D (new-joiner) slab, lower than the established
+    Nagpur table, wired into calc_kcd_regular's NAGPUR branch by vintage.
+  - CSD L1 FNT-1 spot rates updated for June per the "CSD Productivity Spot
+    FNT-1" FAQ (2 txn → ₹4,000/₹2,000; 3 txn → ₹5,500/₹2,750). FNT-2, the RM
+    FNT spot, and the KCD WK-1/WK-3/WK-4 per-product spot tables had no
+    confirmed June numbers in the docs provided, so May's are carried forward
+    as an explicitly-flagged placeholder in the June Slab Config -- edit
+    those sheets once the rate card is issued.
+
 Changes in this version (v19):
   - Fix 1: MDC1_PRODUCTS -- removed MDC 2 Year / MDC 3 Year (multi-year, not MDC-1)
             -> MDC-1 CMR% per employee now accurate -> correct 1.2x/1.0x/0.5x multiplier
@@ -116,6 +141,15 @@ HALF_YEAR_MODES   = ["HALF-YEARLY", "HALF YEARLY", "HY", "6M", "6 MONTHS"]
 POP_CMR_FLOOR     = 55.0              # CSD: min CMR% to earn PoP
 CALC_DATE         = __import__("datetime").date(2026, 4, 30)  # reference date for days-since-joining
 EXCEL_EPOCH       = __import__("datetime").date(1899, 12, 30)  # Excel serial date base
+
+# ── Spot-scheme kill switch ──────────────────────────────────────────────
+# June's spot rate card (FNT-2, RM FNT, KCD WK-1/3/4, Excellent Spot, etc.) is
+# not confirmed yet -- see build_june_slab_config() docstring. Per request,
+# spot incentives are disabled for now: all spot output COLUMNS stay in every
+# sheet (so the layout/structure doesn't change), but their VALUES are forced
+# to 0 and only the base scheme incentive flows into Total Incentive. Flip
+# this back to False once the June spot rate card is confirmed.
+DISABLE_SPOT_SCHEMES = True
 
 def _to_date(val):
     """Convert any date-like value to a Python date object.
@@ -507,6 +541,19 @@ def load_slab_config(uploaded_file):
     return config
 
 
+def _thresh_col(df):
+    """Return whichever per-client threshold column is present on a slab sheet.
+    May/April/March sheets are labelled 'PCDV_Threshold'; June+ sheets are
+    labelled 'PCR_Threshold' (per-txn lookups are metric-agnostic -- the
+    sidebar 'Base metric' toggle decides whether PCR or PCDV values are
+    compared against these thresholds, so the column name is just a label)."""
+    if "PCR_Threshold" in df.columns:
+        return "PCR_Threshold"
+    if "PCDV_Threshold" in df.columns:
+        return "PCDV_Threshold"
+    return df.columns[0] if len(df.columns) > 0 else "PCDV_Threshold"
+
+
 def parse_slabs(cfg):
     """Convert loaded config DataFrames into the tuples the calculation functions expect."""
 
@@ -526,9 +573,14 @@ def parse_slabs(cfg):
     _pop_min_0_30    = int(_p("CSD_PoP_Min_Txn_0_30D",    2))
     _pop_min_31_90   = int(_p("CSD_PoP_Min_Txn_31_90D",   3))
     _pop_slab_gate   = bool(int(_p("CSD_PoP_Use_Slab_Gate",   0)))   # False=flat floor, True=Slab1 gate
-    _both_achiev_on  = bool(int(_p("CSD_BothAchievers_On",    0)))   # False=off (Apr), True=on (May)
-    _both_achiev_pct = _p("CSD_BothAchievers_Pct",   125) / 100      # 1.25
+    _both_achiev_on  = bool(int(_p("CSD_BothAchievers_On",    0)))   # False=off (Apr), True=on (May/June)
+    _both_achiev_pct = _p("CSD_BothAchievers_Pct",   125) / 100      # CSD: 1.25 (May) / 1.00 (June)
     _cmr_only_pct    = _p("CSD_OnlyCMR_Achiever_Pct", 50) / 100     # 0.50
+    # KCD uses its own Both-Achievers %/OnlyCMR % -- June keeps KCD at 125%/50%
+    # while CSD drops to 100%/50% (per Joyous June scheme docs). Separate keys
+    # so the two verticals can diverge; both default to the historical 125/50.
+    _both_achiev_pct_kcd = _p("KCD_BothAchievers_Pct",   125) / 100
+    _cmr_only_pct_kcd    = _p("KCD_OnlyCMR_Achiever_Pct", 50) / 100
     _mdc1_hi_thr     = _p("CSD_MDC1_High_Threshold_%",   35)
     _mdc1_mid_thr    = _p("CSD_MDC1_Mid_Threshold_%",    25)
     _mdc1_hi_mult    = _p("CSD_MDC1_High_Mult_%",       120) / 100
@@ -585,14 +637,18 @@ def parse_slabs(cfg):
     _kcd_bm_cmr_s2   = _p("KCD_BM_CMR_Slab2_%",       80)
     _kcd_bm_ss_min   = _p("KCD_BM_SS_Plus_Min_%",     72)
 
-    # ── CSD New (April or March slabs) ───────────────────────
-    _new_slab_key   = ("CSD_New_Slabs_Apr" if "CSD_New_Slabs_Apr" in cfg
-                       else "CSD_New_Slabs"  if "CSD_New_Slabs"    in cfg else None)
-    _new_params_key = ("CSD_New_Params_Apr" if "CSD_New_Params_Apr" in cfg
-                       else "CSD_New_Params" if "CSD_New_Params"    in cfg else None)
+    # ── CSD New (June → May → April → March slabs) ───────────────────────
+    _new_slab_key   = ("CSD_New_Slabs_June" if "CSD_New_Slabs_June" in cfg else
+                       "CSD_New_Slabs_May"  if "CSD_New_Slabs_May"  in cfg else
+                       "CSD_New_Slabs_Apr"  if "CSD_New_Slabs_Apr"  in cfg else
+                       "CSD_New_Slabs"      if "CSD_New_Slabs"      in cfg else None)
+    _new_params_key = ("CSD_New_Params_June" if "CSD_New_Params_June" in cfg else
+                       "CSD_New_Params_May"  if "CSD_New_Params_May"  in cfg else
+                       "CSD_New_Params_Apr"  if "CSD_New_Params_Apr"  in cfg else
+                       "CSD_New_Params"      if "CSD_New_Params"      in cfg else None)
     _ns_df = cfg.get(_new_slab_key, pd.DataFrame()) if _new_slab_key else pd.DataFrame()
     csd_new_slabs = (
-        [(int(r["PCDV_Threshold"]), int(r["Payout"])) for _, r in _ns_df.iterrows()]
+        [(int(r[_thresh_col(_ns_df)]), int(r["Payout"])) for _, r in _ns_df.iterrows()]
         if len(_ns_df) > 0 else [(2800,10500),(2400,7000),(2100,5100),(1800,3100)]
     )
     _np_df = cfg.get(_new_params_key, pd.DataFrame()) if _new_params_key else pd.DataFrame()
@@ -605,19 +661,21 @@ def parse_slabs(cfg):
     min_txn_31_90        = _pop_min_31_90 if "CSD_PoP_Min_Txn_31_90D" in _sp else int(params.get("Min_Txn_31_90D", 3))
     new_joiner_cap       = _nj_cap
 
-    # ── CSD SPS (May → April → March fallback) ──────────────────
-    def _csd_sps_slabs(may_key, apr_key, mar_key):
-        k = (may_key if may_key in cfg else
+    # ── CSD SPS (June → May → April → March fallback) ──────────────────
+    def _csd_sps_slabs(june_key, may_key, apr_key, mar_key):
+        k = (june_key if june_key in cfg else
+             may_key  if may_key  in cfg else
              apr_key  if apr_key  in cfg else mar_key)
         df = cfg.get(k, pd.DataFrame())
         if df is None or len(df) == 0:
             return []
-        return [(int(r["PCDV_Threshold"]), int(r["Slab1_Per_Txn"]), int(r["Slab2_Per_Txn"]))
+        tcol = _thresh_col(df)
+        return [(int(r[tcol]), int(r["Slab1_Per_Txn"]), int(r["Slab2_Per_Txn"]))
                 for _, r in df.iterrows()]
-    csd_sps_91_270 = _csd_sps_slabs("CSD_SPS_91_270_May", "CSD_SPS_91_270_Apr", "CSD_SPS_91_270D")
-    csd_sps_270p   = _csd_sps_slabs("CSD_SPS_270_May",    "CSD_SPS_270_Apr",    "CSD_SPS_270D_Plus")
-    # CSD RM: May → Apr → default
-    _rm_df = cfg.get("CSD_RM_May", cfg.get("CSD_RM", cfg.get("CSD_SPS_91_270D", pd.DataFrame())))
+    csd_sps_91_270 = _csd_sps_slabs("CSD_SPS_91_270_June", "CSD_SPS_91_270_May", "CSD_SPS_91_270_Apr", "CSD_SPS_91_270D")
+    csd_sps_270p   = _csd_sps_slabs("CSD_SPS_270_June",    "CSD_SPS_270_May",    "CSD_SPS_270_Apr",    "CSD_SPS_270D_Plus")
+    # CSD RM: June → May → Apr → default
+    _rm_df = cfg.get("CSD_RM_June", cfg.get("CSD_RM_May", cfg.get("CSD_RM", cfg.get("CSD_SPS_91_270D", pd.DataFrame()))))
     _rm_thresh_col = ("PCR_Threshold" if "PCR_Threshold" in _rm_df.columns
                       else "PCDV_Threshold" if "PCDV_Threshold" in _rm_df.columns
                       else (_rm_df.columns[0] if len(_rm_df.columns) > 0 else "PCR_Threshold"))
@@ -626,7 +684,7 @@ def parse_slabs(cfg):
         for _, r in _rm_df.iterrows() if _rm_thresh_col in _rm_df.columns
     ]
     # RM CMR slab targets (configurable)
-    _rm_params = cfg.get("CSD_RM_Params_May", cfg.get("CSD_RM_Params", pd.DataFrame()))
+    _rm_params = cfg.get("CSD_RM_Params_June", cfg.get("CSD_RM_Params_May", cfg.get("CSD_RM_Params", pd.DataFrame())))
     _rm_params_dict = {}
     if len(_rm_params) > 0 and "Parameter" in _rm_params.columns:
         _rm_params_dict = {str(r["Parameter"]): float(r["Value"]) for _, r in _rm_params.iterrows()}
@@ -665,9 +723,10 @@ def parse_slabs(cfg):
                     "base":         int(r.get("Base_Amount", 0)),
                     "per_txn":      int(r.get("Per_Txn_After", 0)),
                 }
-    # May spot config: CSD_Spot_May overrides April defaults
-    if "CSD_Spot_May" in cfg:
-        for _, r in cfg["CSD_Spot_May"].iterrows():
+    # June/May spot config: CSD_Spot_June (preferred) or CSD_Spot_May overrides April defaults
+    _csd_spot_junemay_key = "CSD_Spot_June" if "CSD_Spot_June" in cfg else ("CSD_Spot_May" if "CSD_Spot_May" in cfg else None)
+    if _csd_spot_junemay_key:
+        for _, r in cfg[_csd_spot_junemay_key].iterrows():
             spot_type = str(r.get("Spot_Type", "")).strip().upper()
             if spot_type == "L1_FNT1" or ("L1" in spot_type and "FNT2" not in spot_type):
                 csd_spot_apr_rows["FNT1"] = {
@@ -732,23 +791,30 @@ def parse_slabs(cfg):
         if df is None or len(df) == 0:
             return []
         try:
+            tcol = _thresh_col(df)
             if "Slab1_Per_Txn" in df.columns:
-                return [(int(r["PCDV_Threshold"]), int(r["Slab1_Per_Txn"]), int(r["Slab2_Per_Txn"]))
+                return [(int(r[tcol]), int(r["Slab1_Per_Txn"]), int(r["Slab2_Per_Txn"]))
                         for _, r in df.iterrows()]
             else:
-                return [(int(r["PCDV_Threshold"]), int(r["CMR72_Per_Txn"]), int(r["CMR80_Per_Txn"]))
+                return [(int(r[tcol]), int(r["CMR72_Per_Txn"]), int(r["CMR80_Per_Txn"]))
                         for _, r in df.iterrows()]
         except Exception:
             return []
-    def _kcd_key(may_key, apr_key, mar_key):
-        return may_key if may_key in cfg else (apr_key if apr_key in cfg else mar_key)
-    kcd_270_slabs    = to_kcd_slabs(_kcd_key("KCD_Regular_270_May",    "KCD_Regular_270_Apr",    "KCD_Regular_270D"))
-    kcd_91_270_slabs = to_kcd_slabs(_kcd_key("KCD_Regular_91_270_May", "KCD_Regular_91_270_Apr", "KCD_Regular_91_270D"))
-    kcd_0_90_slabs   = to_kcd_slabs(_kcd_key("KCD_New_0_90_May",       "KCD_New_0_90_Apr",       "KCD_Regular_0_90D"))
+    def _kcd_key(june_key, may_key, apr_key, mar_key):
+        return (june_key if june_key in cfg else
+                may_key  if may_key  in cfg else
+                (apr_key if apr_key  in cfg else mar_key))
+    kcd_270_slabs    = to_kcd_slabs(_kcd_key("KCD_Regular_270_June",    "KCD_Regular_270_May",    "KCD_Regular_270_Apr",    "KCD_Regular_270D"))
+    kcd_91_270_slabs = to_kcd_slabs(_kcd_key("KCD_Regular_91_270_June", "KCD_Regular_91_270_May", "KCD_Regular_91_270_Apr", "KCD_Regular_91_270D"))
+    kcd_0_90_slabs   = to_kcd_slabs(_kcd_key("KCD_New_0_90_June",       "KCD_New_0_90_May",       "KCD_New_0_90_Apr",       "KCD_Regular_0_90D"))
     if not kcd_0_90_slabs:  # Fallback to hardcoded default when sheet missing in Slab Config
         kcd_0_90_slabs = to_kcd_slabs("KCD_Regular_0_90D") if "KCD_Regular_0_90D" in cfg else [(14000,2500,3000),(11000,2000,2400),(8000,1500,1800)]
-    kcd_hvri_slabs   = to_kcd_slabs(_kcd_key("KCD_HVRI_May",           "KCD_HVRI_Apr",           "KCD_HVRI"))
-    kcd_nagpur_slabs = to_kcd_slabs(_kcd_key("KCD_Nagpur_May",         "KCD_Nagpur_Apr",         "KCD_Nagpur_Pharma"))
+    kcd_hvri_slabs   = to_kcd_slabs(_kcd_key("KCD_HVRI_June",           "KCD_HVRI_May",           "KCD_HVRI_Apr",           "KCD_HVRI"))
+    kcd_nagpur_slabs = to_kcd_slabs(_kcd_key("KCD_Nagpur_June",         "KCD_Nagpur_May",         "KCD_Nagpur_Apr",         "KCD_Nagpur_Pharma"))
+    # Nagpur Pharma 0-90D (new joiners) -- separate, lower slab introduced in June.
+    # Falls back to the established Nagpur slabs above when no 0-90D-specific
+    # sheet is present (March/April/May configs), so old behaviour is unchanged.
+    kcd_nagpur_0_90_slabs = to_kcd_slabs("KCD_Nagpur_0_90_June") if "KCD_Nagpur_0_90_June" in cfg else kcd_nagpur_slabs
 
     # ── KCD Incremental Rates ────────────────────────────────
     kcd_incr = {}
@@ -759,7 +825,8 @@ def parse_slabs(cfg):
                                             float(r.get("Incr_Rate_%", 1.4)) / 100)
 
     # ── KCD Listing ──────────────────────────────────────────
-    _ls_key = ("KCD_Listing_May" if "KCD_Listing_May" in cfg
+    _ls_key = ("KCD_Listing_June" if "KCD_Listing_June" in cfg
+               else "KCD_Listing_May" if "KCD_Listing_May" in cfg
                else "KCD_Listing_Slabs" if "KCD_Listing_Slabs" in cfg else None)
     _ls_df = cfg.get(_ls_key, pd.DataFrame()) if _ls_key else pd.DataFrame()
     _ls_c1 = ("CMR72_Per_Txn" if "CMR72_Per_Txn" in _ls_df.columns
@@ -782,7 +849,8 @@ def parse_slabs(cfg):
             }
 
     # ── KCD Catalog ──────────────────────────────────────────
-    _cat_key = ("KCD_Catalog_May" if "KCD_Catalog_May" in cfg
+    _cat_key = ("KCD_Catalog_June" if "KCD_Catalog_June" in cfg
+                else "KCD_Catalog_May" if "KCD_Catalog_May" in cfg
                 else "KCD_Catalog_Slabs" if "KCD_Catalog_Slabs" in cfg else None)
     _cat_df = cfg.get(_cat_key, pd.DataFrame()) if _cat_key else pd.DataFrame()
     _cat_c1 = ("CMR72_Per_Txn" if "CMR72_Per_Txn" in _cat_df.columns
@@ -807,10 +875,10 @@ def parse_slabs(cfg):
                 "per1k":  int(r.get("Per_1K_After", 0)),
             }
 
-    # ── KCD WK-1 Power of Productivity Spot (May 01-09) ──────
+    # ── KCD WK-1 Power of Productivity Spot (May/June 01-09) ──────
     # Per-product-type spot: {product_key: {"l1_annual": N, "l1_myr": N}}
     kcd_wk1_spot = {}
-    _wk1_df = cfg.get("KCD_WK1_Spot_May", pd.DataFrame())
+    _wk1_df = cfg.get("KCD_WK1_Spot_June", cfg.get("KCD_WK1_Spot_May", pd.DataFrame()))
     for _, r in _wk1_df.iterrows():
         key = str(r.get("Product_Key", "")).strip().upper()
         if key:
@@ -821,9 +889,9 @@ def parse_slabs(cfg):
                 "l2_myr":    int(r.get("L2_MYR",     0)),
             }
 
-    # ── KCD WK-3 SS+ Spot (May 17-23) ────────────────────────
+    # ── KCD WK-3 SS+ Spot (May/June 17-23) ────────────────────────
     kcd_wk3_spot = {}
-    _wk3_df = cfg.get("KCD_WK3_Spot_May", pd.DataFrame())
+    _wk3_df = cfg.get("KCD_WK3_Spot_June", cfg.get("KCD_WK3_Spot_May", pd.DataFrame()))
     for _, r in _wk3_df.iterrows():
         key = str(r.get("Product_Key", "")).strip().upper()
         if key:
@@ -834,7 +902,7 @@ def parse_slabs(cfg):
                 "l2_myr":    int(r.get("L2_MYR",     0)),
             }
     # WK-3 eligibility thresholds
-    _wk3_cfg = cfg.get("KCD_WK3_Config_May", pd.DataFrame())
+    _wk3_cfg = cfg.get("KCD_WK3_Config_June", cfg.get("KCD_WK3_Config_May", pd.DataFrame()))
     _wk3_params = {}
     if len(_wk3_cfg) > 0 and "Parameter" in _wk3_cfg.columns:
         _wk3_params = {str(r["Parameter"]): float(r["Value"]) for _, r in _wk3_cfg.iterrows()}
@@ -842,9 +910,9 @@ def parse_slabs(cfg):
     kcd_wk3_sam_min = _wk3_params.get("SAM_Min_Total_Prod", 1.5)
     kcd_wk3_ss_min  = int(_wk3_params.get("Min_SS_Prod", 1))
 
-    # ── KCD WK-4 SS+ Spot (May 24-31) ────────────────────────
+    # ── KCD WK-4 SS+ Spot (May/June 24-31) ────────────────────────
     kcd_wk4_spot = {}
-    _wk4_df = cfg.get("KCD_WK4_Spot_May", pd.DataFrame())
+    _wk4_df = cfg.get("KCD_WK4_Spot_June", cfg.get("KCD_WK4_Spot_May", pd.DataFrame()))
     for _, r in _wk4_df.iterrows():
         key = str(r.get("Product_Key", "")).strip().upper()
         if key:
@@ -855,7 +923,7 @@ def parse_slabs(cfg):
                 "l2_myr":    int(r.get("L2_MYR",     0)),
             }
     # WK-4 eligibility thresholds
-    _wk4_cfg = cfg.get("KCD_WK4_Config_May", pd.DataFrame())
+    _wk4_cfg = cfg.get("KCD_WK4_Config_June", cfg.get("KCD_WK4_Config_May", pd.DataFrame()))
     _wk4_params = {}
     if len(_wk4_cfg) > 0 and "Parameter" in _wk4_cfg.columns:
         _wk4_params = {str(r["Parameter"]): float(r["Value"]) for _, r in _wk4_cfg.iterrows()}
@@ -870,32 +938,32 @@ def parse_slabs(cfg):
         bm_rm_spot_rows = _bm_rm_df.to_dict("records")
 
     # ── SAM slab parsing helpers ─────────────────────────────
-    def _sam_kcd_slabs(key_may, key_apr, key_mar):
-        k = key_may if key_may in cfg else (key_apr if key_apr in cfg else key_mar)
+    def _sam_kcd_slabs(key_june, key_may, key_apr, key_mar):
+        k = (key_june if key_june in cfg else
+             key_may  if key_may  in cfg else
+             (key_apr if key_apr  in cfg else key_mar))
         df = cfg.get(k)
         if df is None or len(df) == 0: return []
         c1 = "Slab1_Per_Txn" if "Slab1_Per_Txn" in df.columns else "CMR72_Per_Txn"
         c2 = "Slab2_Per_Txn" if "Slab2_Per_Txn" in df.columns else "CMR80_Per_Txn"
-        t_col = ("PCR_Threshold" if "PCR_Threshold" in df.columns
-                 else "PCDV_Threshold" if "PCDV_Threshold" in df.columns
-                 else df.columns[0])
+        t_col = _thresh_col(df)
         return [(int(r[t_col]), int(r[c1]), int(r[c2])) for _, r in df.iterrows()]
-    def _sam_listing_slabs(key_may, key_apr):
-        k = key_may if key_may in cfg else key_apr
+    def _sam_listing_slabs(key_june, key_may, key_apr):
+        k = key_june if key_june in cfg else (key_may if key_may in cfg else key_apr)
         df = cfg.get(k)
         if df is None or len(df) == 0: return []
         c1 = "CMR72_Per_Txn" if "CMR72_Per_Txn" in df.columns else "Slab1_Per_Txn"
         c2 = "CMR80_Per_Txn" if "CMR80_Per_Txn" in df.columns else "Slab2_Per_Txn"
-        t_col = "Target_Pct" if "Target_Pct" in df.columns else "PCDV_Threshold"
+        t_col = "Target_Pct" if "Target_Pct" in df.columns else _thresh_col(df)
         return [(int(r[t_col]), int(r[c1]), int(r[c2])) for _, r in df.iterrows()]
     _sam_incr_df = cfg.get("KCD_SAM_Incr_Rates", pd.DataFrame())
     _sam_incr = _sam_incr_df.to_dict("records") if len(_sam_incr_df) > 0 else []
-    sam_regular_slabs = _sam_kcd_slabs("KCD_SAM_Regular_May", "KCD_SAM_Regular", "KCD_Regular_91_270D")
-    sam_roi_slabs     = _sam_kcd_slabs("KCD_SAM_ROI_May",     "KCD_SAM_ROI",     "KCD_Regular_0_90D")
-    sam_hvri_slabs    = _sam_kcd_slabs("KCD_SAM_HVRI_May",    "KCD_SAM_HVRI",    "KCD_HVRI")
-    sam_nagpur_slabs  = _sam_kcd_slabs("KCD_SAM_Nagpur_May",  "KCD_SAM_Nagpur",  "KCD_Nagpur_Pharma")
-    sam_listing_slabs = _sam_listing_slabs("KCD_SAM_Listing_May", "KCD_SAM_Listing")
-    sam_catalog_slabs = _sam_listing_slabs("KCD_SAM_Catalog_May", "KCD_SAM_Catalog")
+    sam_regular_slabs = _sam_kcd_slabs("KCD_SAM_Regular_June", "KCD_SAM_Regular_May", "KCD_SAM_Regular", "KCD_Regular_91_270D")
+    sam_roi_slabs     = _sam_kcd_slabs("KCD_SAM_ROI_June",     "KCD_SAM_ROI_May",     "KCD_SAM_ROI",     "KCD_Regular_0_90D")
+    sam_hvri_slabs    = _sam_kcd_slabs("KCD_SAM_HVRI_June",    "KCD_SAM_HVRI_May",    "KCD_SAM_HVRI",    "KCD_HVRI")
+    sam_nagpur_slabs  = _sam_kcd_slabs("KCD_SAM_Nagpur_June",  "KCD_SAM_Nagpur_May",  "KCD_SAM_Nagpur",  "KCD_Nagpur_Pharma")
+    sam_listing_slabs = _sam_listing_slabs("KCD_SAM_Listing_June", "KCD_SAM_Listing_May", "KCD_SAM_Listing")
+    sam_catalog_slabs = _sam_listing_slabs("KCD_SAM_Catalog_June", "KCD_SAM_Catalog_May", "KCD_SAM_Catalog")
 
 
     return {
@@ -934,13 +1002,14 @@ def parse_slabs(cfg):
         "kcd_0_90_slabs":      kcd_0_90_slabs,
         "kcd_hvri_slabs":      kcd_hvri_slabs,
         "kcd_nagpur_slabs":    kcd_nagpur_slabs,
+        "kcd_nagpur_0_90_slabs": kcd_nagpur_0_90_slabs,
         "kcd_incr":            kcd_incr,
         # KCD ROI (lower PCDV thresholds, same per-txn rates as Regular)
-        "kcd_roi_270_slabs":   to_kcd_slabs(_kcd_key("KCD_ROI_May", "KCD_ROI_Apr", "KCD_ROI"))
-                               if _kcd_key("KCD_ROI_May", "KCD_ROI_Apr", "KCD_ROI") in cfg
+        "kcd_roi_270_slabs":   to_kcd_slabs(_kcd_key("KCD_ROI_June", "KCD_ROI_May", "KCD_ROI_Apr", "KCD_ROI"))
+                               if _kcd_key("KCD_ROI_June", "KCD_ROI_May", "KCD_ROI_Apr", "KCD_ROI") in cfg
                                else kcd_270_slabs,
-        "kcd_roi_91_270_slabs": to_kcd_slabs(_kcd_key("KCD_ROI_May", "KCD_ROI_Apr", "KCD_ROI"))
-                                if _kcd_key("KCD_ROI_May", "KCD_ROI_Apr", "KCD_ROI") in cfg
+        "kcd_roi_91_270_slabs": to_kcd_slabs(_kcd_key("KCD_ROI_June", "KCD_ROI_May", "KCD_ROI_Apr", "KCD_ROI"))
+                                if _kcd_key("KCD_ROI_June", "KCD_ROI_May", "KCD_ROI_Apr", "KCD_ROI") in cfg
                                 else kcd_91_270_slabs,
         # KCD Listing/Catalog
         "kcd_listing_slabs":   kcd_listing_slabs,
@@ -959,8 +1028,8 @@ def parse_slabs(cfg):
         "bm_rm_spot_rows":     bm_rm_spot_rows,  # BM/RM PCDV bullet spot (17-31 May)
         # Config-detection flags (True when the config has April-specific tables)
         "has_apr_spot":        "CSD_Spot_Apr" in cfg,
-        "has_may_spot":        "CSD_Spot_May" in cfg,
-        "has_mar_spot":        "CSD_Spot" in cfg and "CSD_Spot_Apr" not in cfg and "CSD_Spot_May" not in cfg,
+        "has_may_spot":        ("CSD_Spot_May" in cfg) or ("CSD_Spot_June" in cfg),
+        "has_mar_spot":        "CSD_Spot" in cfg and "CSD_Spot_Apr" not in cfg and "CSD_Spot_May" not in cfg and "CSD_Spot_June" not in cfg,
         # KCD SAM (L2) slabs
         "kcd_sam_regular":     sam_regular_slabs,
         "kcd_sam_roi":         sam_roi_slabs,
@@ -985,6 +1054,8 @@ def parse_slabs(cfg):
         "both_achievers_on":   _both_achiev_on,
         "both_achievers_pct":  _both_achiev_pct,
         "cmr_only_pct":        _cmr_only_pct,
+        "both_achievers_pct_kcd": _both_achiev_pct_kcd,
+        "cmr_only_pct_kcd":       _cmr_only_pct_kcd,
         "mdc1_hi_thr":         _mdc1_hi_thr,
         "mdc1_mid_thr":        _mdc1_mid_thr,
         "mdc1_hi_mult":        _mdc1_hi_mult,
@@ -1608,6 +1679,320 @@ def build_may_slab_config():
     }
 
 @st.cache_data(show_spinner=False)
+def build_june_slab_config():
+    """June 2026 'Joyous June' scheme slabs.
+
+    Per the June Scheme_Policy docs, the headline change vs May is that every
+    CSD/KCD L1 + KCD SAM slab now keys off PCR (Per Client Collection) instead
+    of PCDV (Per Client Deal Value) -- the actual threshold numbers and per-txn
+    rates are IDENTICAL to May for every confirmed table, only the metric label
+    changes (CSD_RM and KCD were already PCR-style in their column naming).
+    Pick "PCR" in the sidebar's Base metric toggle when using this config.
+
+    Two real (non-cosmetic) changes vs May, confirmed from the FAQ/PPT docs:
+      1. CSD Both-Achievers boost drops from 125% to 100% (PCR+CMR both hit =
+         plain per-txn pay, not a 25% bonus). Only-CMR still pays 50%; PCR-only
+         (CMR not hit) still pays 0%. KCD's Both-Achievers boost stays at 125%
+         (confirmed unchanged in the KCD/SAM PPTs) -- this is why CSD and KCD
+         now have separate *_BothAchievers_Pct params.
+      2. KCD Nagpur Pharma gets a brand-new, lower 0-90D slab (15K/19K/23K) for
+         new joiners, instead of reusing the established 24K/28K/32K table.
+
+    NOT YET CONFIRMED FOR JUNE (carried forward from May as a placeholder --
+    please verify against the rate card once issued and edit before relying on
+    these for payout):
+      - CSD FNT-2 spot, and the CSD Relationship-Manager FNT-1/FNT-2 spot
+        rates. CSD L1 FNT-1 IS confirmed (see "CSD Productivity Spot FNT-1"
+        FAQ): 2 productive txns -> Rs.4,000 (or Rs.2,000 if monthly PCR & CMR
+        not both achieved), 3 txns -> Rs.5,500 (Rs.2,750) -- i.e. base=4000 at
+        min_prod=2, +1500/txn beyond that, halved if base not qualified.
+      - KCD WK-1 / WK-3 / WK-4 per-product spot tables -- the June WK-3 FAQ
+        describes a %-based payout (100%/50%) rather than May's per-product
+        cash table, so May's numbers may no longer apply; no replacement
+        numeric table was included in the docs provided.
+      - There also appears to be a separate "Cash Is Back Spot" FNT-1/FNT-2
+        scheme in the June FAQs (instant payout within a day of 2+ sales) that
+        is NOT modelled here at all -- no rate card was included for it.
+      - BM/RM: the June BM/RM PPTs describe the existing Monthly-AOP scheme
+        (already in Scheme_Params as CSD/KCD _BM/RM_AOP_Rate_%), not May's
+        "PCDV Bullet Spot" -- BM/RM stays blank for sir to calculate manually,
+        same as May, so no BM_RM_Spot sheet is included here.
+    """
+    import pandas as pd
+
+    # ── CSD New (0-30D and 31-90D) — PCR, same numbers as May ───────────────
+    csd_new = pd.DataFrame([
+        {"PCR_Threshold": 2800, "Payout": 10500},
+        {"PCR_Threshold": 2400, "Payout": 7000},
+        {"PCR_Threshold": 2100, "Payout": 5100},
+        {"PCR_Threshold": 1800, "Payout": 3100},
+    ])
+    csd_new_params = pd.DataFrame([
+        {"Parameter": "Incremental_Threshold", "Value": 2800},
+        {"Parameter": "Incremental_Rate_%",    "Value": 3.0},
+        {"Parameter": "Slab2_CMR_Multiplier_%","Value": 120},
+        {"Parameter": "Min_Txn_0_30D",         "Value": 2},
+        {"Parameter": "Min_Txn_31_90D",         "Value": 3},
+    ])
+
+    # ── CSD SPS slabs — June'26 (PCR; same numbers as May's PCDV table) ─────
+    csd_sps_91_270_june = pd.DataFrame([
+        {"PCR_Threshold": 2800, "Slab1_Per_Txn": 2000, "Slab2_Per_Txn": 2400},
+        {"PCR_Threshold": 2600, "Slab1_Per_Txn": 1500, "Slab2_Per_Txn": 1800},
+        {"PCR_Threshold": 2400, "Slab1_Per_Txn": 1000, "Slab2_Per_Txn": 1200},
+    ])
+    csd_sps_270_june = pd.DataFrame([
+        {"PCR_Threshold": 3200, "Slab1_Per_Txn": 2000, "Slab2_Per_Txn": 2400},
+        {"PCR_Threshold": 3000, "Slab1_Per_Txn": 1500, "Slab2_Per_Txn": 1800},
+        {"PCR_Threshold": 2600, "Slab1_Per_Txn": 1000, "Slab2_Per_Txn": 1200},
+    ])
+
+    # ── CSD RM slabs — June'26 (unchanged from May) ──────────────────────────
+    csd_rm_june = pd.DataFrame([
+        {"PCR_Threshold": 2900, "Slab1_Per_Txn": 1250, "Slab2_Per_Txn": 1500},
+        {"PCR_Threshold": 2700, "Slab1_Per_Txn": 1000, "Slab2_Per_Txn": 1200},
+        {"PCR_Threshold": 2500, "Slab1_Per_Txn":  750, "Slab2_Per_Txn":  900},
+    ])
+    csd_rm_params_june = pd.DataFrame([
+        {"Parameter": "CMR_Slab1_Target_%", "Value": 60},
+        {"Parameter": "CMR_Slab2_Target_%", "Value": 65},
+        {"Parameter": "CMR_Min_Eligible_%",  "Value": 53},
+    ])
+
+    # ── CSD FNT-1 / FNT-2 spot ───────────────────────────────────────────────
+    # L1 FNT-1 CONFIRMED from "CSD Productivity Spot FNT-1" FAQ:
+    #   2 txn -> Rs.4000 (full) / Rs.2000 (half);  3 txn -> Rs.5500 / Rs.2750
+    #   => min_prod=2, base=4000, +1500/txn beyond min, half if PCR&CMR not met
+    # L1 FNT-2 / RM FNT-1 / RM FNT-2: NOT in the docs provided -- carried
+    # forward from May as a placeholder. EDIT once confirmed.
+    csd_spot_june = pd.DataFrame([
+        {"Spot_Type": "L1_FNT1",  "Min_Prod": 2,    "Base_Reward": 4000, "Per_Txn": 1500},
+        {"Spot_Type": "RM_FNT1",  "Min_Prod": 2.5,  "Base_Reward": 3000, "Per_Txn": 500},
+        {"Spot_Type": "L1_FNT2",  "Min_Prod": 2,    "Base_Reward": 4000, "Per_Txn": 1500},
+        {"Spot_Type": "RM_FNT2",  "Min_Prod": 2.5,  "Base_Reward": 3000, "Per_Txn": 500},
+    ])
+
+    # ── KCD L1 slabs — June'26 (PCR; same numbers as May's PCDV tables) ──────
+    kcd_91_270_june = pd.DataFrame([
+        {"PCR_Threshold": 17000, "Slab1_Per_Txn": 2500, "Slab2_Per_Txn": 3000},
+        {"PCR_Threshold": 14000, "Slab1_Per_Txn": 2000, "Slab2_Per_Txn": 2400},
+        {"PCR_Threshold": 11000, "Slab1_Per_Txn": 1500, "Slab2_Per_Txn": 1800},
+    ])
+    kcd_270_june = pd.DataFrame([
+        {"PCR_Threshold": 19000, "Slab1_Per_Txn": 2500, "Slab2_Per_Txn": 3000},
+        {"PCR_Threshold": 16000, "Slab1_Per_Txn": 2000, "Slab2_Per_Txn": 2400},
+        {"PCR_Threshold": 13000, "Slab1_Per_Txn": 1500, "Slab2_Per_Txn": 1800},
+    ])
+    kcd_roi_june = pd.DataFrame([
+        {"PCR_Threshold": 14000, "Slab1_Per_Txn": 2500, "Slab2_Per_Txn": 3000},
+        {"PCR_Threshold": 11000, "Slab1_Per_Txn": 2000, "Slab2_Per_Txn": 2400},
+        {"PCR_Threshold":  8000, "Slab1_Per_Txn": 1500, "Slab2_Per_Txn": 1800},
+    ])
+    kcd_hvri_june = pd.DataFrame([
+        {"PCR_Threshold": 17000, "Slab1_Per_Txn": 2500, "Slab2_Per_Txn": 3000},
+        {"PCR_Threshold": 14000, "Slab1_Per_Txn": 2000, "Slab2_Per_Txn": 2400},
+        {"PCR_Threshold": 10000, "Slab1_Per_Txn": 1500, "Slab2_Per_Txn": 1800},
+    ])
+    kcd_nagpur_june = pd.DataFrame([
+        {"PCR_Threshold": 32000, "Slab1_Per_Txn": 2500, "Slab2_Per_Txn": 3000},
+        {"PCR_Threshold": 28000, "Slab1_Per_Txn": 2000, "Slab2_Per_Txn": 2400},
+        {"PCR_Threshold": 24000, "Slab1_Per_Txn": 1500, "Slab2_Per_Txn": 1800},
+    ])
+    # NEW in June: Nagpur Pharma 0-90D (new joiners) gets its own, lower slab
+    # (KCD PPT slide 11) instead of reusing the established 24K/28K/32K table.
+    kcd_nagpur_0_90_june = pd.DataFrame([
+        {"PCR_Threshold": 23000, "Slab1_Per_Txn": 2500, "Slab2_Per_Txn": 3000},
+        {"PCR_Threshold": 19000, "Slab1_Per_Txn": 2000, "Slab2_Per_Txn": 2400},
+        {"PCR_Threshold": 15000, "Slab1_Per_Txn": 1500, "Slab2_Per_Txn": 1800},
+    ])
+    kcd_new_0_90_june = pd.DataFrame([  # CSD-to-KCD / new joined after Feb'26
+        {"PCR_Threshold": 14000, "Slab1_Per_Txn": 2500, "Slab2_Per_Txn": 3000},
+        {"PCR_Threshold": 11000, "Slab1_Per_Txn": 2000, "Slab2_Per_Txn": 2400},
+        {"PCR_Threshold":  8000, "Slab1_Per_Txn": 1500, "Slab2_Per_Txn": 1800},
+    ])
+
+    # ── KCD Listing/Catalog L1 — June'26 (unchanged from May) ────────────────
+    kcd_listing_june = pd.DataFrame([
+        {"Target_Pct": 140, "Slab1_Per_Txn": 2500, "Slab2_Per_Txn": 3000},
+        {"Target_Pct": 120, "Slab1_Per_Txn": 2000, "Slab2_Per_Txn": 2400},
+        {"Target_Pct": 100, "Slab1_Per_Txn": 1500, "Slab2_Per_Txn": 1800},
+    ])
+    kcd_catalog_june = kcd_listing_june.copy()
+
+    # ── KCD SAM slabs — June'26 (PCR; same numbers as May) ───────────────────
+    kcd_sam_regular_june = pd.DataFrame([
+        {"PCR_Threshold": 17000, "Slab1_Per_Txn": 1250, "Slab2_Per_Txn": 1500},
+        {"PCR_Threshold": 14000, "Slab1_Per_Txn": 1000, "Slab2_Per_Txn": 1200},
+        {"PCR_Threshold": 11000, "Slab1_Per_Txn":  750, "Slab2_Per_Txn":  900},
+    ])
+    kcd_sam_roi_june = pd.DataFrame([
+        {"PCR_Threshold": 14000, "Slab1_Per_Txn": 1250, "Slab2_Per_Txn": 1500},
+        {"PCR_Threshold": 11000, "Slab1_Per_Txn": 1000, "Slab2_Per_Txn": 1200},
+        {"PCR_Threshold":  8000, "Slab1_Per_Txn":  750, "Slab2_Per_Txn":  900},
+    ])
+    kcd_sam_hvri_june = pd.DataFrame([
+        {"PCR_Threshold": 17000, "Slab1_Per_Txn": 1250, "Slab2_Per_Txn": 1500},
+        {"PCR_Threshold": 14000, "Slab1_Per_Txn": 1000, "Slab2_Per_Txn": 1200},
+        {"PCR_Threshold": 10000, "Slab1_Per_Txn":  750, "Slab2_Per_Txn":  900},
+    ])
+    kcd_sam_nagpur_june = pd.DataFrame([
+        {"PCR_Threshold": 32000, "Slab1_Per_Txn": 1250, "Slab2_Per_Txn": 1500},
+        {"PCR_Threshold": 28000, "Slab1_Per_Txn": 1000, "Slab2_Per_Txn": 1200},
+        {"PCR_Threshold": 24000, "Slab1_Per_Txn":  750, "Slab2_Per_Txn":  900},
+    ])
+    kcd_sam_listing_june = pd.DataFrame([
+        {"Target_Pct": 140, "Slab1_Per_Txn": 1250, "Slab2_Per_Txn": 1500},
+        {"Target_Pct": 120, "Slab1_Per_Txn": 1000, "Slab2_Per_Txn": 1200},
+        {"Target_Pct": 95,  "Slab1_Per_Txn":  750, "Slab2_Per_Txn":  900},
+    ])
+    kcd_sam_catalog_june = kcd_sam_listing_june.copy()
+
+    # ── KCD incremental rates — unchanged from May ───────────────────────────
+    kcd_incr_june = pd.DataFrame([
+        {"Team": "Regular_91_270", "Incr_Threshold": 17000, "Incr_Rate_%": 1.40},
+        {"Team": "Regular_270",    "Incr_Threshold": 19000, "Incr_Rate_%": 1.40},
+        {"Team": "ROI",            "Incr_Threshold": 14000, "Incr_Rate_%": 1.40},
+        {"Team": "HVRI",           "Incr_Threshold": 17000, "Incr_Rate_%": 1.40},
+        {"Team": "Nagpur",         "Incr_Threshold": 32000, "Incr_Rate_%": 0.85},
+        {"Team": "Nagpur_0_90",    "Incr_Threshold": 23000, "Incr_Rate_%": 0.85},
+        {"Team": "New_KCD",        "Incr_Threshold": 14000, "Incr_Rate_%": 1.40},
+        {"Team": "Listing_140pct", "Incr_Threshold": 140,   "Incr_Rate_%": 1.40},
+        {"Team": "Catalog_140pct", "Incr_Threshold": 140,   "Incr_Rate_%": 1.40},
+    ])
+
+    # ── KCD WK-1 / WK-3 / WK-4 spot — NOT CONFIRMED for June; May carried
+    #    forward as a placeholder (see docstring). EDIT before relying on these.
+    kcd_wk1_spot = pd.DataFrame([
+        {"Product_Key": "IM_STAR_PRO",    "L1_Annual": 500,  "L1_MYR": 1000, "L2_Annual": 250, "L2_MYR": 500},
+        {"Product_Key": "IM_LEADER_PRO",  "L1_Annual": 750,  "L1_MYR": 1500, "L2_Annual": 400, "L2_MYR": 750},
+        {"Product_Key": "PREF_SS_PRO",    "L1_Annual": 500,  "L1_MYR": 1000, "L2_Annual": 250, "L2_MYR": 500},
+        {"Product_Key": "PREF_LS_PRO",    "L1_Annual": 1000, "L1_MYR": 2000, "L2_Annual": 500, "L2_MYR": 1000},
+        {"Product_Key": "VALUE_PLUS",     "L1_Annual": 500,  "L1_MYR": 1000, "L2_Annual": 250, "L2_MYR": 500},
+        {"Product_Key": "PL_PLUS",        "L1_Annual": 1500, "L1_MYR": 3000, "L2_Annual": 750, "L2_MYR": 1500},
+    ])
+    kcd_wk3_spot = pd.DataFrame([
+        {"Product_Key": "IM_STAR_PREF_STAR",     "L1_Annual": 1500, "L1_MYR": 2000, "L2_Annual": 750,  "L2_MYR": 1000},
+        {"Product_Key": "IM_LEADER_PREF_LEADER",  "L1_Annual": 2000, "L1_MYR": 2500, "L2_Annual": 1000, "L2_MYR": 1250},
+        {"Product_Key": "VALUE_PLUS_IVE",         "L1_Annual": 1000, "L1_MYR": 1500, "L2_Annual": 750,  "L2_MYR": 1000},
+        {"Product_Key": "PL_PLUS",                "L1_Annual": 3000, "L1_MYR": 5000, "L2_Annual": 1500, "L2_MYR": 2500},
+    ])
+    kcd_wk3_config = pd.DataFrame([
+        {"Parameter": "L1_Min_Total_Prod",  "Value": 2,   "Description": "Min total prod (any upsell/ren) in WK-3 for L1"},
+        {"Parameter": "SAM_Min_Total_Prod", "Value": 1.5, "Description": "Min total prod in WK-3 for SAM (L2)"},
+        {"Parameter": "Min_SS_Prod",        "Value": 1,   "Description": "Min SS+ NR Upsell/Ren/AMR count required"},
+    ])
+    kcd_wk4_spot = kcd_wk3_spot.copy()
+    kcd_wk4_config = pd.DataFrame([
+        {"Parameter": "L1_Min_Total_Prod",  "Value": 3,   "Description": "Min total prod (any upsell/ren) in WK-4 for L1"},
+        {"Parameter": "SAM_Min_Total_Prod", "Value": 2.5, "Description": "Min total prod in WK-4 for SAM (L2)"},
+        {"Parameter": "Min_SS_Prod",        "Value": 1,   "Description": "Min SS+ NR Upsell/Ren/AMR count required"},
+    ])
+
+    return {
+        "CSD_New_Slabs_June":      csd_new,
+        "CSD_New_Params_June":     csd_new_params,
+        "CSD_SPS_91_270_June":     csd_sps_91_270_june,
+        "CSD_SPS_270_June":        csd_sps_270_june,
+        "CSD_RM_June":             csd_rm_june,
+        "CSD_RM_Params_June":      csd_rm_params_june,
+        "CSD_Spot_June":           csd_spot_june,
+        "KCD_Regular_91_270_June": kcd_91_270_june,
+        "KCD_Regular_270_June":    kcd_270_june,
+        "KCD_ROI_June":            kcd_roi_june,
+        "KCD_HVRI_June":           kcd_hvri_june,
+        "KCD_Nagpur_June":         kcd_nagpur_june,
+        "KCD_Nagpur_0_90_June":    kcd_nagpur_0_90_june,
+        "KCD_New_0_90_June":       kcd_new_0_90_june,
+        "KCD_Listing_June":        kcd_listing_june,
+        "KCD_Catalog_June":        kcd_catalog_june,
+        "KCD_SAM_Regular_June":    kcd_sam_regular_june,
+        "KCD_SAM_ROI_June":        kcd_sam_roi_june,
+        "KCD_SAM_HVRI_June":       kcd_sam_hvri_june,
+        "KCD_SAM_Nagpur_June":     kcd_sam_nagpur_june,
+        "KCD_SAM_Listing_June":    kcd_sam_listing_june,
+        "KCD_SAM_Catalog_June":    kcd_sam_catalog_june,
+        "KCD_WK1_Spot_June":       kcd_wk1_spot,
+        "KCD_WK3_Spot_June":       kcd_wk3_spot,
+        "KCD_WK3_Config_June":     kcd_wk3_config,
+        "KCD_WK4_Spot_June":       kcd_wk4_spot,
+        "KCD_WK4_Config_June":     kcd_wk4_config,
+        "KCD_Incr_Rates_June":     kcd_incr_june,
+        "Scheme_Params":          pd.DataFrame([
+            {"Parameter": "CSD_NewJoiner_Cap",         "Value": 20000, "Description": "Max PCR+PoP incentive for 0-90D employees (₹)"},
+            {"Parameter": "CSD_PoP_Min_CMR_Pct",       "Value": 55.0,  "Description": "Min CMR% to earn PoP (0-90D)"},
+            {"Parameter": "CSD_NewJoiner_Incr_Rate_%",  "Value": 3.0,   "Description": "% of incr Collection above top PCR slab (0-90D)"},
+            {"Parameter": "CSD_PoP_Min_Txn_0_30D",     "Value": 2,     "Description": "Min productivity count to qualify PoP (0-30D)"},
+            {"Parameter": "CSD_PoP_Min_Txn_31_90D",    "Value": 3,     "Description": "Min productivity count to qualify PoP (31-90D)"},
+            {"Parameter": "CSD_PoP_Use_Slab_Gate",     "Value": 1,     "Description": "PoP CMR gate: 1=Slab1 target must be achieved"},
+            # June: CSD Both-Achievers drops from 125% (May) to 100% -- per
+            # "CSD Joyous June" FAQ Q12/Q13 (PCR & CMR both met = 100%, not a
+            # bonus). KCD keeps its own 125% via KCD_BothAchievers_Pct below.
+            {"Parameter": "CSD_BothAchievers_On",      "Value": 1,     "Description": "Both Achievers mult ON: PCR+CMR=100% (June), CMR-only=50%"},
+            {"Parameter": "CSD_BothAchievers_Pct",     "Value": 100,   "Description": "CSD Both Achievers payout % (PCR slab + CMR Slab1 both achieved) -- 100% in June, was 125% in May"},
+            {"Parameter": "CSD_OnlyCMR_Achiever_Pct",  "Value": 50,    "Description": "CSD Only-CMR-Achiever payout % (CMR hit, PCR slab not hit)"},
+            # KCD Both-Achievers stays at 125% in June (confirmed in KCD/SAM PPTs)
+            {"Parameter": "KCD_BothAchievers_Pct",     "Value": 125,   "Description": "KCD Both Achievers payout % (PCR/Collection + CMR both achieved) -- unchanged at 125% in June"},
+            {"Parameter": "KCD_OnlyCMR_Achiever_Pct",  "Value": 50,    "Description": "KCD Only-CMR-Achiever payout % (CMR hit, PCR/Collection target not hit)"},
+            {"Parameter": "CSD_MDC1_Mid_Threshold_%",   "Value": 25,   "Description": "MDC-1 CMR% between Mid and High → Mid_Mult; below → Low_Mult"},
+            {"Parameter": "CSD_MDC1_High_Mult_%",       "Value": 120,  "Description": "MDC-1 multiplier (%) when above High threshold"},
+            {"Parameter": "CSD_MDC1_Mid_Mult_%",        "Value": 100,  "Description": "MDC-1 multiplier (%) when between thresholds"},
+            {"Parameter": "CSD_MDC1_Low_Mult_%",        "Value": 50,   "Description": "MDC-1 multiplier (%) when below Mid threshold"},
+            {"Parameter": "CSD_Booster_TAT_Below",      "Value": 1,    "Description": "SPS Booster: Ext Ticket TAT must be below this"},
+            {"Parameter": "CSD_Booster_60D_Below_%",    "Value": 10,   "Description": "SPS Booster: 60D Not Met must be below this %"},
+            {"Parameter": "CSD_Booster_Mult_%",         "Value": 120,  "Description": "SPS Booster multiplier when both criteria met (%)"},
+            {"Parameter": "CSD_RM_CMR_Min_%",           "Value": 53,   "Description": "CSD RM min CMR% to be eligible"},
+            {"Parameter": "CSD_RM_CMR_Slab1_%",         "Value": 60,   "Description": "CSD RM Slab1 CMR threshold"},
+            {"Parameter": "CSD_RM_CMR_Slab2_%",         "Value": 65,   "Description": "CSD RM Slab2 CMR threshold"},
+            {"Parameter": "KCD_SS_Plus_Threshold_%",    "Value": 72,   "Description": "KCD SS+ gate: ≥ this CMR% → 100%, else 50%"},
+            {"Parameter": "KCD_CMR_Slab2_%",            "Value": 80,   "Description": "KCD higher CMR slab for top per-txn rate"},
+            {"Parameter": "KCD_Min_Prod_Week",          "Value": 2,    "Description": "Min weekly productivity to unlock base incentive"},
+            {"Parameter": "KCD_Min_Prod_Month",         "Value": 8,    "Description": "Min monthly productivity (established)"},
+            {"Parameter": "KCD_Min_Prod_Month_New",     "Value": 6,    "Description": "Min monthly productivity (new / CSD-to-KCD)"},
+            {"Parameter": "KCD_Incr_Rate_Regular_%",    "Value": 1.4,  "Description": "KCD incremental % (Regular/ROI/HVRI/Listing)"},
+            {"Parameter": "KCD_Incr_Rate_Nagpur_%",     "Value": 0.85, "Description": "KCD Nagpur L1 incremental % above 32K"},
+            {"Parameter": "KCD_SAM_Incr_Rate_%",        "Value": 0.65, "Description": "KCD SAM incremental %"},
+            {"Parameter": "KCD_SAM_Nagpur_Incr_%",      "Value": 0.45, "Description": "KCD SAM Nagpur incremental %"},
+            {"Parameter": "IM_Insta_L1_Rate",           "Value": 300,  "Description": "IM Insta spot per qualifying sale (L1, ₹)"},
+            {"Parameter": "IM_Insta_L2_Rate",           "Value": 150,  "Description": "IM Insta spot per qualifying sale (L2, ₹)"},
+            {"Parameter": "IM_Insta_Min_Week",          "Value": 2,    "Description": "Min IM Insta prods in a week to qualify"},
+            {"Parameter": "IM_Insta_Min_Month",         "Value": 7,    "Description": "Min IM Insta prods in month to qualify"},
+            {"Parameter": "MCATs_L1_Rate",              "Value": 1000, "Description": "MCATs spot per MCAT from 3rd onwards (L1, ₹)"},
+            {"Parameter": "MCATs_L2_Rate",              "Value": 500,  "Description": "MCATs spot per MCAT from 3rd onwards (L2, ₹)"},
+            {"Parameter": "MCATs_Min_Count",            "Value": 2,    "Description": "MCATs count before spot starts"},
+            {"Parameter": "IM_Star_Pro_Spot_Rate",      "Value": 1000, "Description": "IM Star Pro+/Pref spot per new sale (₹)"},
+            {"Parameter": "IM_Star_Pro_From_Day",       "Value": 28,   "Description": "Day-of-month from which IM Star Pro+ spot is active"},
+            {"Parameter": "Excellent_Spot_L1_Rate",    "Value": 750,  "Description": "Excellent Spot Rs/txn L1 (90+ vintage) -- carried from May, not confirmed for June"},
+            {"Parameter": "Excellent_Spot_L2_Rate",    "Value": 400,  "Description": "Excellent Spot Rs/txn L2 from 2nd txn -- carried from May, not confirmed for June"},
+            {"Parameter": "Excellent_Spot_Day",        "Value": 4,    "Description": "Day-of-month Excellent Spot applies"},
+            {"Parameter": "KCD_HC_Mult_Regular",        "Value": 21000,"Description": "HC = Client-A × this (Regular/Listing/Catalog L1)"},
+            {"Parameter": "KCD_HC_Mult_ROI",            "Value": 14000,"Description": "HC multiplier for ROI L1"},
+            {"Parameter": "KCD_HC_Mult_HVRI",           "Value": 17000,"Description": "HC multiplier for HVRI L1"},
+            {"Parameter": "KCD_HC_Mult_Nagpur",         "Value": 32000,"Description": "HC multiplier for Nagpur L1"},
+            {"Parameter": "KCD_HC_Mult_SAM",            "Value": 17000,"Description": "HC multiplier for SAM / L2 (all teams)"},
+            {"Parameter": "CSD_BM_AOP_Rate_%",          "Value": 1.00,  "Description": "CSD BM (L3) base rate: % of Deal Value"},
+            {"Parameter": "CSD_RM_AOP_Rate_%",          "Value": 0.70,  "Description": "CSD RM (L4) base rate: % of Deal Value"},
+            {"Parameter": "CSD_BM_AOP_Cap_%",           "Value": 5.00,  "Description": "CSD BM max payout as % of Deal Value"},
+            {"Parameter": "CSD_RM_AOP_Cap_%",           "Value": 4.00,  "Description": "CSD RM max payout as % of Deal Value"},
+            {"Parameter": "KCD_BM_AOP_Rate_%",          "Value": 0.50,  "Description": "KCD BM (L3) base rate: % of Deal Value"},
+            {"Parameter": "KCD_RM_AOP_Rate_%",          "Value": 0.35,  "Description": "KCD RM (L4) base rate: % of Deal Value"},
+            {"Parameter": "KCD_BM_AOP_Cap_%",           "Value": 2.00,  "Description": "KCD BM/RM max payout as % of Deal Value"},
+            {"Parameter": "KCD_RM_AOP_Cap_%",           "Value": 2.00,  "Description": "KCD RM max payout as % of Deal Value"},
+            {"Parameter": "AOP_Min_Achievement_%",       "Value": 95,    "Description": "Minimum AOP achievement % to be eligible"},
+            {"Parameter": "AOP_Mult_95_100_%",           "Value": 100,   "Description": "AOP multiplier % for 95-100% achievement"},
+            {"Parameter": "AOP_Mult_100_105_%",          "Value": 110,   "Description": "AOP multiplier % for 100-105% achievement"},
+            {"Parameter": "AOP_Mult_105_110_%",          "Value": 120,   "Description": "AOP multiplier % for 105-110% achievement"},
+            {"Parameter": "AOP_Mult_110_Plus_%",         "Value": 130,   "Description": "AOP multiplier % for 110%+ achievement"},
+            {"Parameter": "CSD_BM_CMR_Min_%",           "Value": 53,    "Description": "CSD BM/RM min CMR% to be eligible"},
+            {"Parameter": "CSD_BM_CMR_Slab1_%",         "Value": 60,    "Description": "CSD BM/RM CMR Slab1: 50% payout (53-60%)"},
+            {"Parameter": "CSD_BM_CMR_Slab2_%",         "Value": 65,    "Description": "CSD BM/RM CMR Slab2: 100% (60-65%), 120% above"},
+            {"Parameter": "KCD_BM_CMR_Min_%",           "Value": 72,    "Description": "KCD BM/RM min CMR% to be eligible"},
+            {"Parameter": "KCD_BM_CMR_Slab1_%",         "Value": 75,    "Description": "KCD BM/RM CMR: 75% payout (72-75%)"},
+            {"Parameter": "KCD_BM_CMR_Slab2_%",         "Value": 80,    "Description": "KCD BM/RM CMR: 100% (75-80%), 120% above"},
+            {"Parameter": "KCD_BM_SS_Plus_Min_%",        "Value": 72,    "Description": "KCD BM/RM SS+ gate: ≥ this → 100%, else 50%"},
+        ]),
+    }
+
+
 def make_slab_config_excel():
     """Generate the downloadable Slab_Config.xlsx template. Cached -- only built once."""
     defaults = build_default_slab_config()
@@ -1625,6 +2010,39 @@ def make_slab_config_excel():
                 ws.write(1, col_num, col_name, hdr_fmt)
             # Note row above headers
             ws.write(0, 0, f"NOTE -- Sheet: {sheet_name} | Edit values in rows below. Do NOT rename columns.", note_fmt)
+            ws.set_row(0, 18)
+    return buf.getvalue()
+
+
+@st.cache_data(show_spinner=False)
+def make_june_slab_config_excel():
+    """Generate the downloadable June 2026 Slab_Config.xlsx with June-specific
+    (PCR-based) sheets. Spot-scheme sheets carried forward from May are
+    flagged in their note row as NOT YET CONFIRMED for June."""
+    june_cfg = build_june_slab_config()
+    _placeholder_sheets = {
+        "CSD_Spot_June": "FNT-1 row IS confirmed; FNT-2/RM rows carried from May",
+        "KCD_WK1_Spot_June": "carried from May -- NOT confirmed for June, please verify",
+        "KCD_WK3_Spot_June": "carried from May -- NOT confirmed for June, please verify",
+        "KCD_WK3_Config_June": "carried from May -- NOT confirmed for June, please verify",
+        "KCD_WK4_Spot_June": "carried from May -- NOT confirmed for June, please verify",
+        "KCD_WK4_Config_June": "carried from May -- NOT confirmed for June, please verify",
+    }
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="xlsxwriter") as w:
+        hdr_fmt   = w.book.add_format({"bold": True, "bg_color": "#7A4F01", "font_color": "#FFFFFF", "border": 1})
+        note_fmt  = w.book.add_format({"italic": True, "font_color": "#595959"})
+        warn_fmt  = w.book.add_format({"italic": True, "font_color": "#9C0006", "bold": True})
+        for sheet_name, df in june_cfg.items():
+            df.to_excel(w, sheet_name=sheet_name, index=False, startrow=1)
+            ws = w.sheets[sheet_name]
+            ws.set_column(0, len(df.columns) - 1, 22)
+            for col_num, col_name in enumerate(df.columns):
+                ws.write(1, col_num, col_name, hdr_fmt)
+            if sheet_name in _placeholder_sheets:
+                ws.write(0, 0, f"⚠ June'26 | {sheet_name} | {_placeholder_sheets[sheet_name]}.", warn_fmt)
+            else:
+                ws.write(0, 0, f"June'26 Scheme (PCR) | {sheet_name} | Do NOT rename columns.", note_fmt)
             ws.set_row(0, 18)
     return buf.getvalue()
 
@@ -3591,12 +4009,12 @@ def calc_kcd_sam(pcr_val, pcdv_val, net_dv, net_coll, txn_prod_raw,
             _dv_hit  = per_txn > 0
             _cmr_hit  = (cmr_col_val > 0) and (ss_cmr_pct >= S.get("kcd_ss_threshold", 72))
             if _dv_hit and _cmr_hit:
-                total = round(total * S.get("both_achievers_pct", 1.25), 0)
-                _ba_note = f" | BothAchievers×{S.get('both_achievers_pct',1.25):.0%}"
+                total = round(total * S.get("both_achievers_pct_kcd", 1.25), 0)
+                _ba_note = f" | BothAchievers×{S.get('both_achievers_pct_kcd',1.25):.0%}"
             elif _cmr_hit and not _dv_hit:
                 _lowest_r = (slabs[-1][2] if ss_cmr_pct >= 80 else slabs[-1][1]) if slabs else 0
-                total = round(_lowest_r * float(txn_prod_raw or 0) * ss_mult * S.get("cmr_only_pct", 0.50), 0)
-                _ba_note = f" | OnlyCMR×{S.get('cmr_only_pct',0.50):.0%}"
+                total = round(_lowest_r * float(txn_prod_raw or 0) * ss_mult * S.get("cmr_only_pct_kcd", 0.50), 0)
+                _ba_note = f" | OnlyCMR×{S.get('cmr_only_pct_kcd',0.50):.0%}"
 
         notes = (f"KCD SAM {'Listing' if is_listing else 'Catalog'} {vintage} | "
                  f"PCR%:{pcr_pct_val:.1f}% | Rs{per_txn}/txn*{txn_prod_raw:.1f} | "
@@ -3654,12 +4072,12 @@ def calc_kcd_sam(pcr_val, pcdv_val, net_dv, net_coll, txn_prod_raw,
         _pcdv_hit = per_txn > 0
         _cmr_hit  = (cmr_col_val > 0) and (ss_cmr_pct >= S.get("kcd_ss_threshold", 72))
         if _pcdv_hit and _cmr_hit:
-            total = round(total * S.get("both_achievers_pct", 1.25), 0)
-            _ba_note = f" | BothAchievers×{S.get('both_achievers_pct',1.25):.0%}"
+            total = round(total * S.get("both_achievers_pct_kcd", 1.25), 0)
+            _ba_note = f" | BothAchievers×{S.get('both_achievers_pct_kcd',1.25):.0%}"
         elif _cmr_hit and not _pcdv_hit:
             _lowest_r = (slabs[-1][2] if is_cmr80 else slabs[-1][1]) if slabs else 0
-            total = round(_lowest_r * txn_prod_raw * ss_mult * S.get("cmr_only_pct", 0.50), 0)
-            _ba_note = f" | OnlyCMR×{S.get('cmr_only_pct',0.50):.0%}"
+            total = round(_lowest_r * txn_prod_raw * ss_mult * S.get("cmr_only_pct_kcd", 0.50), 0)
+            _ba_note = f" | OnlyCMR×{S.get('cmr_only_pct_kcd',0.50):.0%}"
 
     notes = (f"KCD SAM {'Nagpur' if is_nagpur else 'HVRI' if is_hvri else 'ROI' if is_roi else 'Regular'}"
              f" {vintage} | PCDV:{pcdv_val:.0f} | Rs{per_txn}/txn*{txn_prod_raw:.1f} | "
@@ -3680,12 +4098,12 @@ def calc_kcd_roi(pcdv, txn_count, cmr_col_val, vintage,
     if S.get("both_achievers_on", False):
         _cmr_hit  = (cmr_col_val > 0) and (ss_cmr_pct >= S.get("kcd_ss_threshold", 72))
         if per_txn > 0 and _cmr_hit:
-            base = round(base * S.get("both_achievers_pct", 1.25), 0)
-            _ba_note = f" | BothAchievers×{S.get('both_achievers_pct',1.25):.0%}"
+            base = round(base * S.get("both_achievers_pct_kcd", 1.25), 0)
+            _ba_note = f" | BothAchievers×{S.get('both_achievers_pct_kcd',1.25):.0%}"
         elif _cmr_hit and per_txn == 0:
             _lowest_r = (slabs[-1][2] if cmr_col_val == 2 else slabs[-1][1]) if slabs else 0
-            base = round(_lowest_r * txn_count * ss_mult * S.get("cmr_only_pct", 0.50), 0)
-            _ba_note = f" | OnlyCMR×{S.get('cmr_only_pct',0.50):.0%}"
+            base = round(_lowest_r * txn_count * ss_mult * S.get("cmr_only_pct_kcd", 0.50), 0)
+            _ba_note = f" | OnlyCMR×{S.get('cmr_only_pct_kcd',0.50):.0%}"
 
     return round(base, 0),            f"KCD ROI {vintage} | {metric_label}:{round(pcdv)} | ₹{per_txn}/txn×{txn_count} | SS+:{ss_mult}{_ba_note}"
 
@@ -3701,7 +4119,8 @@ def calc_kcd_regular(pcdv, txn_count, cmr_col_val, vintage, location,
     """
     loc = str(location).upper()
     if "NAGPUR" in loc:
-        slabs = S.get("kcd_nagpur_slabs", [])
+        slabs = (S.get("kcd_nagpur_0_90_slabs", []) if vintage in ("0-30D", "31-90D")
+                 else S.get("kcd_nagpur_slabs", []))
     elif any(c in loc for c in ["HYDERABAD", "VASHI", "RAIPUR", "INDORE"]):
         slabs = S.get("kcd_hvri_slabs", [])
     else:
@@ -3728,13 +4147,13 @@ def calc_kcd_regular(pcdv, txn_count, cmr_col_val, vintage, location,
         _pcdv_hit = per_txn > 0
         _cmr_hit  = (cmr_col_val > 0) and (ss_cmr_pct >= S.get("kcd_ss_threshold", 72))
         if _pcdv_hit and _cmr_hit:
-            base = round(base * S.get("both_achievers_pct", 1.25), 0)
-            _ba_note = f" | BothAchievers×{S.get('both_achievers_pct',1.25):.0%}"
+            base = round(base * S.get("both_achievers_pct_kcd", 1.25), 0)
+            _ba_note = f" | BothAchievers×{S.get('both_achievers_pct_kcd',1.25):.0%}"
         elif _cmr_hit and not _pcdv_hit:
             # Only CMR: 50% of lowest slab rate for employee's CMR column
             _lowest_r = (slabs[-1][2] if cmr_col_val == 2 else slabs[-1][1]) if slabs else 0
-            base = round(_lowest_r * txn_count * ss_mult * S.get("cmr_only_pct", 0.50), 0)
-            _ba_note = f" | OnlyCMR×{S.get('cmr_only_pct',0.50):.0%}"
+            base = round(_lowest_r * txn_count * ss_mult * S.get("cmr_only_pct_kcd", 0.50), 0)
+            _ba_note = f" | OnlyCMR×{S.get('cmr_only_pct_kcd',0.50):.0%}"
 
     return round(base, 0), \
            f"KCD Regular {vintage} | {metric_label}:{round(pcdv)} | ₹{per_txn}/txn×{txn_count} | SS+:{ss_mult}{_ba_note}"
@@ -3783,12 +4202,12 @@ def calc_kcd_listing(net_dv, txn_count, cmr_col_val, vintage,
         _dv_hit  = per_txn > 0
         _cmr_hit  = (cmr_col_val > 0) and (ss_cmr_pct >= S.get("kcd_ss_threshold", 72))
         if _dv_hit and _cmr_hit:
-            base = round(base * S.get("both_achievers_pct", 1.25), 0)
-            _ba_note = f" | BothAchievers×{S.get('both_achievers_pct',1.25):.0%}"
+            base = round(base * S.get("both_achievers_pct_kcd", 1.25), 0)
+            _ba_note = f" | BothAchievers×{S.get('both_achievers_pct_kcd',1.25):.0%}"
         elif _cmr_hit and not _dv_hit:
             _min_rate = min((r1 for _, r1, _ in S.get("kcd_listing_slabs", [(0,0,0)]) if r1 > 0), default=0)
-            base = round(_min_rate * txn_count * ss_mult * S.get("cmr_only_pct", 0.50), 0)
-            _ba_note = f" | OnlyCMR×{S.get('cmr_only_pct',0.50):.0%}"
+            base = round(_min_rate * txn_count * ss_mult * S.get("cmr_only_pct_kcd", 0.50), 0)
+            _ba_note = f" | OnlyCMR×{S.get('cmr_only_pct_kcd',0.50):.0%}"
 
     return round(base, 0), \
            f"KCD Listing {vintage} | Achv:{round(achv,1)}% | ₹{per_txn}/txn×{txn_count} | SS+:{ss_mult}{_ba_note}"
@@ -3842,12 +4261,12 @@ def calc_kcd_catalog(net_dv, txn_count, cmr_col_val, vintage,
         _dv_hit  = per_txn > 0
         _cmr_hit  = (cmr_col_val > 0) and (ss_cmr_pct >= S.get("kcd_ss_threshold", 72))
         if _dv_hit and _cmr_hit:
-            base = round(base * S.get("both_achievers_pct", 1.25), 0)
-            _ba_note = f" | BothAchievers×{S.get('both_achievers_pct',1.25):.0%}"
+            base = round(base * S.get("both_achievers_pct_kcd", 1.25), 0)
+            _ba_note = f" | BothAchievers×{S.get('both_achievers_pct_kcd',1.25):.0%}"
         elif _cmr_hit and not _dv_hit:
             _min_rate = min((r1 for _, r1, _ in S.get("kcd_catalog_slabs", [(0,0,0)]) if r1 > 0), default=0)
-            base = round(_min_rate * txn_count * ss_mult * btl_mult * S.get("cmr_only_pct", 0.50), 0)
-            _ba_note = f" | OnlyCMR×{S.get('cmr_only_pct',0.50):.0%}"
+            base = round(_min_rate * txn_count * ss_mult * btl_mult * S.get("cmr_only_pct_kcd", 0.50), 0)
+            _ba_note = f" | OnlyCMR×{S.get('cmr_only_pct_kcd',0.50):.0%}"
 
     return round(base, 0), \
            f"KCD Catalog {vintage} | Achv:{round(achv,1)}% | ₹{per_txn}/txn×{txn_count} | BTL:{btl_mult} | SS+:{ss_mult}{_ba_note}"
@@ -5783,6 +6202,17 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
     if "KCD" in vertical:
         spot_inc = int(spot_inc) + _im_insta_spot + _mcats_spot + _im_star_pro_spot_kcd + _wk1_spot + _wk3_spot + _wk4_spot + _excellent_spot
 
+    # ── Spot schemes disabled for now (rate card not confirmed) ─────────────
+    # Force every spot-related amount to 0 so Total Incentive = base only.
+    # Columns themselves stay in the output sheets -- see DISABLE_SPOT_SCHEMES.
+    if DISABLE_SPOT_SCHEMES:
+        spot_inc = 0
+        _fnt1_spot = _fnt2_spot = 0
+        _excellent_spot = 0
+        _im_insta_spot = _mcats_spot = 0
+        _im_star_pro_spot_kcd = _im_star_spot = 0
+        _wk1_spot = _wk3_spot = _wk4_spot = 0
+
     # KCD breakdown -- extract per-txn rate from scheme notes
     _kcd_base   = int(kcd_base_only)   if "KCD" in vertical else 0
     _kcd_incr   = int(kcd_incremental) if "KCD" in vertical else 0
@@ -5965,7 +6395,7 @@ def _derive_scheme_type(vintage, team, vertical, designation):
 # UI
 # ═══════════════════════════════════════════════════════════════
 
-st.title("💰 IndiaMart Incentive Calculator -- v31")
+st.title("💰 IndiaMart Incentive Calculator -- v32 (June'26 PCR)")
 st.caption("Employee name from Renewal L1 column | CMR% auto-calculated | Slabs editable via config file")
 
 # ── Sidebar ──────────────────────────────────────────────────
@@ -6106,7 +6536,14 @@ Sheets included:
 | KCD_Spot | Spot rate thresholds + rewards |
     """)
 
-col_a, col_b, col_c = st.columns(3)
+col_x, col_a, col_b, col_c = st.columns(4)
+with col_x:
+    st.download_button(
+        "⬇️ Download June 2026 Slab Config (PCR)",
+        data=make_june_slab_config_excel(),
+        file_name="Slab_Config_June2026_PCR.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
 with col_a:
     st.download_button(
         "⬇️ Download May 2026 Slab Config",
@@ -6134,9 +6571,12 @@ slab_cfg_raw = load_slab_config(slab_cfg_file)
 S = parse_slabs(slab_cfg_raw)
 
 # ── Detect which month config is loaded ──────────────────────────────────────
+_is_june_cfg = "CSD_New_Slabs_June" in slab_cfg_raw or "CSD_SPS_91_270_June" in slab_cfg_raw or "CSD_RM_June" in slab_cfg_raw
 _is_may_cfg = "CSD_SPS_91_270_May" in slab_cfg_raw or "CSD_Spot_May" in slab_cfg_raw
 _is_apr_cfg = "CSD_Spot_Apr" in slab_cfg_raw or "CSD_SPS_91_270_Apr" in slab_cfg_raw
-if _is_may_cfg:
+if _is_june_cfg:
+    _cfg_label = "June 2026 (PCR)"
+elif _is_may_cfg:
     _cfg_label = "May 2026"
 elif _is_apr_cfg:
     _cfg_label = "April 2026"
@@ -6147,7 +6587,7 @@ if slab_cfg_file:
     st.success(f"✅ Slab Config loaded — **{_cfg_label}** scheme values active.")
 else:
     st.info(f"📋 No config uploaded — using built-in **{_cfg_label}** defaults. "
-            "Download the May 2026 config above, edit if needed, then upload.", icon="ℹ️")
+            "Download the June 2026 config above, edit if needed, then upload.", icon="ℹ️")
 
 with st.expander("📊 Active Scheme Parameters (click to verify before calculating)", expanded=False):
     st.caption("These are the values currently being used in calculations. "
