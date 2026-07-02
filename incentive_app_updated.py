@@ -3250,9 +3250,9 @@ def load_cmr_targets(uploaded_file):
             eid = str(row[emp_col]).split(".")[0].strip()
             if not eid or eid.lower() in ("nan", ""):
                 continue
-            s1 = float(row[slab1_col]) if slab1_col and pd.notna(row[slab1_col]) else 0.70
+            s1 = float(row[slab1_col]) if slab1_col and pd.notna(row[slab1_col]) else 0.72
             s2 = float(row[slab2_col]) if slab2_col and pd.notna(row[slab2_col]) else 0.80
-            # Excel stores percentages as decimals (70% → 0.70)
+            # Excel stores percentages as decimals (72% → 0.72)
             # Convert to 0-100 scale if values are in 0-1 range
             if s1 <= 1.0:
                 s1 = round(s1 * 100, 4)
